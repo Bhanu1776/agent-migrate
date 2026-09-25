@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-migrate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500&family=Inter:wght@400;500&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --canvas: #faf9f5; --card: #efe9de; --dark: #181715; --dark-soft: #1f1e1b;
+    --ink: #141413; --body: #3d3d3a; --muted: #6c6a64; --on-dark: #faf9f5; --on-dark-soft: #a09d96;
+    --hairline: #e6dfd8; --coral: #cc785c; --teal: #5db8a6; --amber: #e8a55a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--body); font: 400 16px/1.55 Inter, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 64px 16px 48px; }
+  h1, h2 { font-family: "Cormorant Garamond", "Tiempos Headline", Garamond, serif; font-weight: 500; color: var(--ink); }
+  h1 { font-size: 48px; line-height: 1.1; letter-spacing: -1px; margin: 0 0 12px; }
+  h2 { font-size: 28px; line-height: 1.2; letter-spacing: -0.3px; margin: 48px 0 12px; }
+  .lead { font-size: 18px; color: var(--body); margin: 0; }
+  .badge { display: inline-block; background: var(--card); color: var(--ink); font: 500 12px/1.4 Inter, sans-serif; letter-spacing: 1.5px; text-transform: uppercase; padding: 4px 12px; border-radius: 9999px; margin-bottom: 16px; }
+  pre { background: var(--dark); color: var(--on-dark); font: 14px/1.6 "JetBrains Mono", ui-monospace, monospace; padding: 24px; border-radius: 12px; overflow-x: auto; margin: 12px 0; }
+  pre .c { color: var(--on-dark-soft); }
+  code { font: 14px "JetBrains Mono", ui-monospace, monospace; background: var(--card); padding: 1px 6px; border-radius: 4px; color: var(--ink); }
+  pre code { background: none; padding: 0; color: inherit; }
+  .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 12px; align-items: center; background: var(--card); border-radius: 12px; padding: 24px; }
+  .box { background: var(--canvas); border: 1px solid var(--hairline); border-radius: 8px; padding: 12px; font-size: 14px; text-align: center; }
+  .box b { display: block; color: var(--ink); font-weight: 500; }
+  .box.mid { border-color: var(--coral); }
+  .arrow { color: var(--coral); font-size: 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+  ol, ul { padding-left: 20px; } li { margin: 4px 0; }
+  .ok { color: #3f8f55; } .no { color: #c64545; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--hairline); padding-top: 16px; }
+  @media (max-width: 600px) {
+    h1 { font-size: 36px; }
+    .flow { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); justify-self: center; }
+    td:first-child { white-space: normal; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <span class="badge">v0.1 · local tool</span>
+  <h1>agent-migrate</h1>
+  <p class="lead">Move your coding-agent setup from one harness to another with one command. It does a dry run first, shows a gap report, and is safe to run again.</p>
+
+  <h2>How it works</h2>
+  <div class="flow">
+    <div class="box"><b>Reader</b>claude-code<br>codex</div>
+    <div class="arrow">→</div>
+    <div class="box mid"><b>Neutral bundle</b>instructions · skills · prompts · MCP · memory · hooks · guards · chats</div>
+    <div class="arrow">→</div>
+    <div class="box"><b>Writer</b>pi<br><span style="color:var(--muted)">opencode… next</span></div>
+  </div>
+  <p>Each harness needs one reader and one writer, not a converter for every pair. To add a harness, write one file and add one line in <code>cli.py</code>.</p>
+
+  <h2>Use it</h2>
+<pre><code><span class="c"># 1. See the plan. This writes nothing.</span>
+./agent-migrate claude-code pi --dry-run
+
+<span class="c"># 2. Try it on a scratch folder, then check it with pi's own loader</span>
+./agent-migrate claude-code pi --target /tmp/pi-test
+node tests/verify_pi_target.mjs /tmp/pi-test ~/some/repo
+
+<span class="c"># 3. Apply it for real (pi's default dir ~/.pi/agent)</span>
+./agent-migrate claude-code pi
+./agent-migrate codex pi          <span class="c"># you can run it again; each source keeps its own block</span>
+
+<span class="c"># Only some parts</span>
+./agent-migrate codex pi --only skills,mcp,memory</code></pre>
+
+  <h2>What moves where (→ pi)</h2>
+  <table>
+    <tr><th>Part</th><th>From</th><th>Becomes</th></tr>
+    <tr><td>Instructions</td><td>CLAUDE.md · AGENTS.md</td><td>A marked block in <code>AGENTS.md</code>. Your own text stays, and the old file is backed up.</td></tr>
+    <tr><td>Skills</td><td>skills/, plugin skills</td><td>A symlink, only if pi cannot see the skill yet. Skills that were "off" stay off.</td></tr>
+    <tr><td>Prompts</td><td>commands/, prompts/</td><td><code>/name</code> commands. Plugin commands get a prefix (<code>/codex-rescue</code>).</td></tr>
+    <tr><td>MCP</td><td>.claude.json · config.toml</td><td><code>mcp.json</code> (mode 0600), plus <code>pi-mcp-adapter</code>.</td></tr>
+    <tr><td>Memory</td><td>projects/*/memory · memories/</td><td><code>memory/&lt;project&gt;</code>. It goes into the prompt on every turn.</td></tr>
+    <tr><td>Hooks</td><td>settings + plugin hooks, notify</td><td>The bridge extension runs them. They get JSON on stdin, and exit 2 blocks the action.</td></tr>
+    <tr><td>Guards</td><td>deny/ask rules, soft_deny, .rules</td><td>Before a matching bash command, pi asks you, or blocks it if no one can answer.</td></tr>
+    <tr><td>Chats</td><td>transcripts, rollouts</td><td>pi sessions for <code>/resume</code>. Only the text and short tool-call lines are kept.</td></tr>
+  </table>
+
+  <h2>Promises (tested)</h2>
+  <ul>
+    <li class="ok">A dry run writes nothing.</li>
+    <li class="ok">A second run adds nothing new. No chats or blocks are duplicated.</li>
+    <li class="ok">Secrets stay in 0600 files and never show on screen.</li>
+    <li class="ok">It never deletes anything you wrote. It makes backups with a timestamp.</li>
+    <li class="no">It never copies logins, account connectors (Slack, Gmail…), or keybindings. The gap report lists them for you.</li>
+  </ul>
+
+  <h2>Before you trust it</h2>
+  <ol>
+    <li>Read the <b>"not migrated"</b> list at the end of every run. That list is your to-do list.</li>
+    <li>If you already set up pi by hand (for example <code>claude-compat.ts</code>), remove it, or memory and hooks run twice.</li>
+    <li>Plugin hooks are run as they are. Check the <b>hooks</b> rows in the dry run first.</li>
+  </ol>
+
+  <footer>Python 3.11+ standard library only · tests: <code>python3 -m unittest discover -s tests -t .</code></footer>
+</main>
+</body>
+</html>

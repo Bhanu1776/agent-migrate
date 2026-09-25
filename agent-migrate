@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run from anywhere: symlink this into ~/.local/bin.
+d=$(dirname "$(readlink -f "$0")")
+PYTHONPATH="$d${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m agent_migrate "$@"
