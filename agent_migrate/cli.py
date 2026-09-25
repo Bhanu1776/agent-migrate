@@ -13,7 +13,7 @@ from pathlib import Path
 from .model import PARTS
 
 READERS = {"claude-code": "claude_code", "codex": "codex"}
-WRITERS = {"pi": ("pi", "~/.pi/agent")}
+WRITERS = {"pi": "pi", "opencode": "opencode", "oh-my-pi": "oh_my_pi", "prime-agent": "prime_agent", "hermes": "hermes"}  # each writer module exposes DEFAULT_TARGET
 
 
 def main(argv=None):
@@ -31,11 +31,11 @@ def main(argv=None):
     if bad := parts - set(PARTS):
         ap.error(f"unknown parts: {', '.join(sorted(bad))}")
     home = Path(a.home).expanduser()
-    wmod, default_target = WRITERS[a.dest]
-    target = Path(a.target or default_target).expanduser()
+    writer = import_module(f".writers.{WRITERS[a.dest]}", __package__)
+    target = Path(a.target or writer.DEFAULT_TARGET).expanduser()
 
     bundle = import_module(f".readers.{READERS[a.source]}", __package__).read(home)
-    plan = import_module(f".writers.{wmod}", __package__).plan(bundle, target, home, parts)
+    plan = writer.plan(bundle, target, home, parts)
 
     print(f"{a.source} → {a.dest}   target: {target}{'   (DRY RUN — nothing is written)' if a.dry_run else ''}\n")
     for part in list(PARTS) + ["settings"]:

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..model import Bundle, Plan
 
+DEFAULT_TARGET = "~/.pi/agent"
 ASSET = Path(__file__).resolve().parent.parent / "assets" / "pi-bridge.ts"
 STAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
 

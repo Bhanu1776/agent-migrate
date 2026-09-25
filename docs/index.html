@@ -45,7 +45,7 @@
 </head>
 <body>
 <main>
-  <span class="badge">v0.1 · local tool</span>
+  <span class="badge">v0.2 · 2 sources → 5 targets</span>
   <h1>agent-migrate</h1>
   <p class="lead">Move your coding-agent setup from one harness to another with one command. It does a dry run first, shows a gap report, and is safe to run again.</p>
 
@@ -55,7 +55,7 @@
     <div class="arrow">→</div>
     <div class="box mid"><b>Neutral bundle</b>instructions · skills · prompts · MCP · memory · hooks · guards · chats</div>
     <div class="arrow">→</div>
-    <div class="box"><b>Writer</b>pi<br><span style="color:var(--muted)">opencode… next</span></div>
+    <div class="box"><b>Writer</b>pi · oh-my-pi<br>prime-agent<br>opencode · hermes</div>
   </div>
   <p>Each harness needs one reader and one writer, not a converter for every pair. To add a harness, write one file and add one line in <code>cli.py</code>.</p>
 
@@ -72,9 +72,12 @@ node tests/verify_pi_target.mjs /tmp/pi-test ~/some/repo
 ./agent-migrate codex pi          <span class="c"># you can run it again; each source keeps its own block</span>
 
 <span class="c"># Only some parts</span>
-./agent-migrate codex pi --only skills,mcp,memory</code></pre>
+./agent-migrate codex pi --only skills,mcp,memory
 
-  <h2>What moves where (→ pi)</h2>
+<span class="c"># Other targets: opencode · oh-my-pi · prime-agent · hermes</span>
+./agent-migrate claude-code opencode --dry-run</code></pre>
+
+  <h2>What moves where (→ pi; other targets use their own native equivalents)</h2>
   <table>
     <tr><th>Part</th><th>From</th><th>Becomes</th></tr>
     <tr><td>Instructions</td><td>CLAUDE.md · AGENTS.md</td><td>A marked block in <code>AGENTS.md</code>. Your own text stays, and the old file is backed up.</td></tr>

@@ -3,15 +3,25 @@
 Move your coding-agent setup from one harness to another with one command.
 
 ```
-claude-code ─┐                      ┌─→ pi
-codex ───────┴─→  neutral bundle  ──┴─→ (more writers welcome)
+claude-code ─┐                      ┌─→ pi · oh-my-pi · prime-agent
+codex ───────┴─→  neutral bundle  ──┴─→ opencode · hermes
 ```
 
 Readers turn a harness's config into a neutral bundle. Writers turn the bundle into another harness's files. Each new harness needs one adapter, not one converter for every pair.
 
+## Supported
+
+| Target | Default dir | Notes |
+|---|---|---|
+| `pi` | `~/.pi/agent` | Bridge extension for memory, hooks, and guards. Uses [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) for MCP. |
+| `oh-my-pi` | `~/.omp/agent` | omp already reads Claude and Codex setups, so the tool adds only what omp can't see. Import chats with `omp --from-claude` / `--from-codex`. |
+| `prime-agent` | `~/.prime/agent` | Native MCP. The only tool is `ipython`, so guards and hooks see `!cmd` lines and string literals only. |
+| `opencode` | `~/.config/opencode` | Guards become `permission.bash` rules. A plugin runs hooks and memory. Chats come in through `opencode import`. |
+| `hermes` | `~/.hermes` | `SOUL.md`, `config.yaml` blocks, and native shell hooks and approvals. Secrets go in `.env`. Chats are not migrated. |
+
 ## What it moves
 
-| Part | From | To pi |
+| Part | From | To pi (other targets map to their own native equivalents) |
 |---|---|---|
 | Instructions | `CLAUDE.md`, `AGENTS.md` | A marked block in `AGENTS.md`. Your own text is kept and backed up. |
 | Skills | user and plugin skills | Symlinks for skills pi can't already see. Skills that were "off" stay off. |
