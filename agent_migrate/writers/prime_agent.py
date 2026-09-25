@@ -15,8 +15,9 @@ import re
 import shutil
 from pathlib import Path
 
+from ..guards import SEGMENTS_TS
 from ..model import Bundle, Plan
-from .pi import API_FOR_SOURCE, STAMP, _load, _session_lines, _upsert_block, _write_private
+from .pi import API_FOR_SOURCE, STAMP, _backup_once, _load, _read_json, _session_lines, _upsert_block, _write_private
 
 DEFAULT_TARGET = "~/.prime/agent"
 
@@ -48,16 +49,29 @@ type Guard = { pattern: string; action: "ask" | "deny"; origin?: string };
 const AGENT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const MEMORY_ROOT = join(AGENT_DIR, "memory");
 
-function loadBridge(): { hooks: Hook[]; guards: Guard[] } {
+type CompiledGuard = Guard & { rx: RegExp };
+
+// A rule that doesn't compile must not take the whole extension down; it's dropped and
+// reported once at session start instead.
+function loadBridge(): { hooks: Hook[]; guards: CompiledGuard[]; broken: string[] } {
   try {
     const data = JSON.parse(readFileSync(join(AGENT_DIR, "agent-migrate", "bridge.json"), "utf8"));
     const sources = Object.values(data.sources ?? {}) as Array<{ hooks?: Hook[]; guards?: Guard[] }>;
-    return { hooks: sources.flatMap((s) => s.hooks ?? []), guards: sources.flatMap((s) => s.guards ?? []) };
+    const guards: CompiledGuard[] = [];
+    const broken: string[] = [];
+    for (const g of sources.flatMap((s) => s.guards ?? [])) {
+      try {
+        guards.push({ ...g, rx: new RegExp(g.pattern) });
+      } catch {
+        broken.push(g.origin ?? g.pattern);
+      }
+    }
+    return { hooks: sources.flatMap((s) => s.hooks ?? []), guards, broken };
   } catch {
-    return { hooks: [], guards: [] };
+    return { hooks: [], guards: [], broken: [] };
   }
 }
-
+__SEGMENTS__
 const slug = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-");
 
 function memoryDir(cwd: string): string {
@@ -120,7 +134,14 @@ export function shellCommands(toolName: string, input: Record<string, unknown>):
   return out.filter(Boolean);
 }
 
-const matches = (h: Hook, name: string) => !h.matcher || h.matcher === "*" || new RegExp(`^(?:${h.matcher})$`).test(name);
+function matches(h: Hook, name: string): boolean {
+  if (!h.matcher || h.matcher === "*") return true;
+  try {
+    return new RegExp(`^(?:${h.matcher})$`).test(name);
+  } catch {
+    return false; // an invalid matcher never fires; it must not break every tool call
+  }
+}
 
 async function blockedByHook(h: Hook, name: string, toolInput: object, cwd: string): Promise<string | undefined> {
   const r = await runHook(h, { hook_event_name: "PreToolUse", tool_name: name, tool_input: toolInput, cwd }, cwd, 60_000);
@@ -133,11 +154,15 @@ async function blockedByHook(h: Hook, name: string, toolInput: object, cwd: stri
 }
 
 export default function (pi: ExtensionAPI) {
-  const { hooks, guards } = loadBridge();
+  const { hooks, guards, broken } = loadBridge();
   const on = (e: string) => hooks.filter((h) => h.event === e);
   let startContext = "";
 
   pi.on("session_start", async (event, ctx) => {
+    if (broken.length && ctx.hasUI) ctx.ui.notify(`agent-migrate: ${broken.length} guard rule(s) have an invalid regex and are OFF: ${broken.join(", ")}`, "warning");
+    // Claude runs SessionStart/Stop for the main agent only; headless runs (subagents, -p)
+    // would otherwise re-fire notification-style hooks for every one of them.
+    if (!ctx.hasUI) return;
     const outs = await Promise.all(
       on("session_start").map((h) => runHook(h, { hook_event_name: "SessionStart", source: event.reason, cwd: ctx.cwd }, ctx.cwd, 10_000)),
     );
@@ -165,8 +190,8 @@ export default function (pi: ExtensionAPI) {
     const input = event.input as Record<string, unknown>;
     const cmds = shellCommands(event.toolName, input);
     for (const g of guards) {
-      const rx = new RegExp(g.pattern);
-      const hit = cmds.find((c) => rx.test(c));
+      // `cd x && git push` must still hit a `git push` rule: test every sub-command.
+      const hit = cmds.find((c) => commandSegments(c).some((seg) => g.rx.test(seg)));
       if (hit === undefined) continue;
       const what = g.origin ? ` (${g.origin})` : "";
       if (g.action === "deny") return { block: true, reason: `Blocked by migrated rule${what}.` };
@@ -197,6 +222,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (_e, ctx) => {
+    if (!ctx.hasUI) return;
     for (const h of on("stop")) void runHook(h, { hook_event_name: "Stop", cwd: ctx.cwd }, ctx.cwd, 30_000);
   });
 
@@ -204,7 +230,7 @@ export default function (pi: ExtensionAPI) {
     await Promise.all(on("session_end").map((h) => runHook(h, { hook_event_name: "SessionEnd", cwd: ctx.cwd }, ctx.cwd, 5_000)));
   });
 }
-"""
+""".replace("__SEGMENTS__", SEGMENTS_TS)
 
 
 def _visible_skills(home: Path, target: Path) -> dict[str, Path]:
@@ -219,6 +245,9 @@ def _visible_skills(home: Path, target: Path) -> dict[str, Path]:
 
 def _mcp_entry(name: str, cfg: dict, gaps: list[str]) -> dict | None:
     """Claude-shaped server -> prime-agent settings entry. Never puts a secret value in a gap."""
+    if cfg.get("type") == "sse":
+        gaps.append(f"mcp '{name}': SSE transport; prime-agent speaks only stdio and streamable HTTP, so not migrated")
+        return None
     if "url" in cfg:
         entry = {"type": "http", "url": cfg["url"]}
         headers = dict(cfg.get("headers") or {})
@@ -253,7 +282,11 @@ def _mcp_entry(name: str, cfg: dict, gaps: list[str]) -> dict | None:
 def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     p = Plan(gaps=list(b.gaps))
     settings_path = target / "settings.json"
-    settings = _load(settings_path, {})
+    settings = _read_json(settings_path)
+    settings_ok = settings is not None
+    if not settings_ok:  # rewriting it would drop the user's other keys
+        settings = {}
+        p.gaps.append("settings.json is not valid JSON: skill switches and MCP servers were not merged; fix it and re-run")
     before = json.dumps(settings, sort_keys=True)
 
     if "instructions" in parts and b.instructions:
@@ -332,11 +365,17 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     if ("memory" in parts and b.memory) or ("hooks" in parts and b.hooks) or ("guards" in parts and b.guards):
         hooks = []
         for h in (b.hooks if "hooks" in parts else []):
-            if h.matcher and h.matcher != "*" and not re.fullmatch(h.matcher, "Bash"):
+            try:
+                known = not h.matcher or h.matcher == "*" or re.fullmatch(h.matcher, "Bash")
+            except re.error:
+                p.gaps.append(f"hook {h.event} [{h.matcher}] ({h.origin}): matcher is not a valid regex; skipped")
+                continue
+            if not known:
                 p.gaps.append(f"hook {h.event} [{h.matcher}] ({h.origin}): prime-agent has no such tool (only ipython); skipped")
                 continue
             hooks.append({"event": h.event, "command": h.command, "matcher": h.matcher, "env": h.env})
-            p.add("hooks", "write", f"{h.event}{f' [{h.matcher}]' if h.matcher else ''} ({h.origin}): {h.command[:70]}")
+            # Never the command text: it can carry tokens, and plans are printed.
+            p.add("hooks", "write", f"{h.event}{f' [{h.matcher}]' if h.matcher else ''} ({h.origin})")
         guards = [{"pattern": g.pattern, "action": g.action, "origin": g.origin} for g in (b.guards if "guards" in parts else [])]
         for g in guards:
             p.add("guards", "write", f"{g['action']:4} {g['origin']}")
@@ -365,18 +404,20 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
             root.mkdir(parents=True, exist_ok=True)
             for s in b.sessions():
                 if s.id in todo:
-                    (root / f"{s.id}.jsonl").write_text("".join(json.dumps(x) + "\n" for x in _session_lines(s, api, provider)))
+                    # chats can hold pasted secrets: owner-only, like prime-agent's own session files
+                    _write_private(root / f"{s.id}.jsonl", "".join(json.dumps(x) + "\n" for x in _session_lines(s, api, provider)))
 
         if todo:
             p.add("sessions", "write", f"{len(todo)} chats (text + short tool-call lines)", write_sessions)
         if have:
             p.add("sessions", "skip", f"{len(have)} chats already in prime-agent")
 
-    if json.dumps(settings, sort_keys=True) != before:
+    if settings_ok and json.dumps(settings, sort_keys=True) != before:
         def write_settings():
-            if settings_path.exists() and not list(target.glob("settings.json.bak-*")):
-                shutil.copy2(settings_path, target / f"settings.json.bak-{STAMP}")
-            cur = _load(settings_path, {})
+            cur = _read_json(settings_path)
+            if cur is None:
+                raise RuntimeError("settings.json stopped parsing since the plan; left untouched")
+            _backup_once(settings_path)
             for key in ("skills", "mcpServers"):
                 if key in settings:
                     cur[key] = settings[key]

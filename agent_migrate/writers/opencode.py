@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..model import Bundle, Plan
+from .pi import _read_json, _upsert_block
 
 DEFAULT_TARGET = "~/.config/opencode"
 STAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -138,15 +139,25 @@ function claudeInput(args: Record<string, unknown> = {}): Record<string, unknown
   return { ...rest, ...(filePath !== undefined && { file_path: filePath }), ...(oldString !== undefined && { old_string: oldString }), ...(newString !== undefined && { new_string: newString }) };
 }
 
-const matches = (h: Hook, name: string) => !h.matcher || h.matcher === "*" || new RegExp(`^(?:${h.matcher})$`).test(name);
+function matches(h: Hook, name: string): boolean {
+  if (!h.matcher || h.matcher === "*") return true;
+  try {
+    return new RegExp(`^(?:${h.matcher})$`).test(name);
+  } catch {
+    return false; // an invalid matcher never fires; it must not break every tool call
+  }
+}
 
 export const AgentMigrateBridge = async ({ directory }: { directory: string }) => {
   const hooks = loadHooks();
   const on = (e: string) => hooks.filter((h) => h.event === e);
   let startContext = "";
+  // Subagent (child) sessions go idle after every task; Claude runs Stop for the main agent only.
+  const children = new Set<string>();
 
   return {
     event: async ({ event }: { event: { type: string; properties?: any } }) => {
+      if (event.type === "session.created" && event.properties?.info?.parentID) children.add(event.properties.info.id);
       if (event.type === "session.created" && !event.properties?.info?.parentID) {
         const outs = await Promise.all(on("session_start").map((h) => runHook(h, { hook_event_name: "SessionStart", source: "startup", cwd: directory }, directory, 10_000)));
         // Claude feeds SessionStart stdout (or JSON additionalContext) to the model as context.
@@ -162,7 +173,7 @@ export const AgentMigrateBridge = async ({ directory }: { directory: string }) =
           .join("\n\n")
           .trim();
       }
-      if (event.type === "session.idle") {
+      if (event.type === "session.idle" && !children.has(event.properties?.sessionID)) {
         for (const h of on("stop")) void runHook(h, { hook_event_name: "Stop", cwd: directory }, directory, 30_000);
       }
     },
@@ -199,16 +210,6 @@ export const AgentMigrateBridge = async ({ directory }: { directory: string }) =
   };
 };
 '''.replace("__TOOLS__", json.dumps(OC_TOOLS_AS_CLAUDE))
-
-
-def _block(key: str, body: str) -> str:
-    return f"<!-- agent-migrate:{key}:start -->\n{body.strip()}\n<!-- agent-migrate:{key}:end -->"
-
-
-def _upsert_block(text: str, key: str, body: str) -> str:
-    new = _block(key, body)
-    rx = re.compile(rf"<!-- agent-migrate:{re.escape(key)}:start -->.*?<!-- agent-migrate:{re.escape(key)}:end -->", re.S)
-    return rx.sub(lambda _: new, text) if rx.search(text) else (text.rstrip() + "\n\n" + new + "\n").lstrip()
 
 
 def _write_private(path: Path, data: str):
@@ -301,7 +302,10 @@ def _oc_id(prefix: str, ts_ms: int, counter: int, seed: str, descending=False) -
 def _export(s, source: str) -> dict:
     """A reader Session as `opencode export` JSON (shape copied from a real export)."""
     provider = PROVIDER_FOR_SOURCE.get(source, source)
-    started = int(datetime.fromisoformat(s.started.replace("Z", "+00:00")).timestamp() * 1000)
+    if s.started:
+        started = int(datetime.fromisoformat(s.started.replace("Z", "+00:00")).timestamp() * 1000)
+    else:  # some sources leave it blank: the first message is the next best start time
+        started = s.messages[0].ts_ms if s.messages else 0
     sid = _oc_id("ses", started, 0, s.id, descending=True)
     messages, parent, ts = [], None, started
     for i, m in enumerate(s.messages):
@@ -331,11 +335,10 @@ def _export(s, source: str) -> dict:
 def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     p = Plan(gaps=list(b.gaps))
     cfg_path = target / "opencode.json"
-    cfg_ok = True
-    try:
-        cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {}
-    except (OSError, ValueError):
-        cfg, cfg_ok = {}, False
+    cfg = _read_json(cfg_path)
+    cfg_ok = cfg is not None
+    if not cfg_ok:
+        cfg = {}
         p.gaps.append("opencode.json has comments or is invalid JSON: MCP servers, guards and skill switches were not merged; add them by hand")
     cfg_before = json.dumps(cfg, sort_keys=True)
     perm = cfg.get("permission", {})
@@ -452,11 +455,17 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     if ("memory" in parts and b.memory) or ("hooks" in parts and b.hooks):
         hooks = []
         for h in (b.hooks if "hooks" in parts else []):
-            if h.matcher and h.matcher != "*" and not any(re.fullmatch(h.matcher, t) for t in OC_TOOLS_AS_CLAUDE.values()):
+            try:
+                known = not h.matcher or h.matcher == "*" or any(re.fullmatch(h.matcher, t) for t in OC_TOOLS_AS_CLAUDE.values())
+            except re.error:
+                p.gaps.append(f"hook {h.event} [{h.matcher}] ({h.origin}): matcher is not a valid regex; skipped")
+                continue
+            if not known:
                 p.gaps.append(f"hook {h.event} [{h.matcher}] ({h.origin}): opencode has no such tool; skipped")
                 continue
             hooks.append({"event": h.event, "command": h.command, "matcher": h.matcher, "env": h.env})
-            p.add("hooks", "write", f"{h.event}{f' [{h.matcher}]' if h.matcher else ''} ({h.origin}): {h.command[:70]}")
+            # Never the command text: it can carry tokens, and plans are printed.
+            p.add("hooks", "write", f"{h.event}{f' [{h.matcher}]' if h.matcher else ''} ({h.origin})")
         bridge_path = target / "agent-migrate" / "bridge.json"
 
         def write_bridge(hooks=hooks):
@@ -477,24 +486,41 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     if "sessions" in parts:
         sess_dir = target / "agent-migrate" / "sessions"
         have = {f.stem for f in sess_dir.glob("*.json")} if sess_dir.is_dir() else set()
-        todo = [s.id for s in b.sessions() if s.id not in have]
+        todo, bad = [], 0
+        for s in b.sessions():
+            if s.id in have:
+                continue
+            try:  # one malformed chat must not sink the rest: convert now, count what fails
+                _export(s, b.source)
+                todo.append(s.id)
+            except Exception:
+                bad += 1
+        if bad:
+            p.gaps.append(f"{bad} chats have data opencode's export format can't hold (bad timestamps?); skipped")
         # Import writes opencode's own database, which follows XDG_DATA_HOME, not the target dir:
         # only do it for the real config dir, so a --target test run never touches real chats.
         real = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "opencode"
         auto = target.expanduser().resolve() == real.resolve() and shutil.which("opencode")
 
         def write_sessions(todo=set(todo)):
+            failed = []
             for s in b.sessions():
                 if s.id not in todo:
                     continue
                 out = sess_dir / f"{s.id}.json"
-                _write_private(out, json.dumps(_export(s, b.source)))  # chats can hold pasted secrets
+                try:
+                    _write_private(out, json.dumps(_export(s, b.source)))  # chats can hold pasted secrets
+                except Exception:
+                    failed.append(s.id)
+                    continue
                 if auto:
                     cwd = s.cwd if os.path.isdir(s.cwd) else str(home)
                     r = subprocess.run(["opencode", "import", str(out)], cwd=cwd, capture_output=True, text=True)
                     if r.returncode:
                         out.unlink()  # not imported: let the next run retry it
-                        raise RuntimeError(f"opencode import failed for chat {s.id} (exit {r.returncode})")
+                        failed.append(s.id)
+            if failed:  # the rest are in; report the stragglers (a re-run retries them)
+                raise RuntimeError(f"{len(failed)} chats not migrated, e.g. {failed[0]}")
 
         if todo:
             p.add("sessions", "write", f"{len(todo)} chats (text + short tool-call lines)" + (" → opencode import" if auto else ""),

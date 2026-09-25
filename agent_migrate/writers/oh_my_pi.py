@@ -24,6 +24,11 @@ from pathlib import Path
 from ..model import Bundle, Plan
 from . import pi
 
+try:  # stdlib-only tool: use a YAML parser to vet config.yml only when one happens to be installed
+    import yaml
+except ImportError:
+    yaml = None
+
 DEFAULT_TARGET = "~/.omp/agent"
 
 OMP_NOTES = """## omp mechanics (added by agent-migrate — the instructions below were written for another harness)
@@ -82,19 +87,38 @@ def _native_mcp_names(home: Path) -> set[str]:
 
 def add_disabled(text: str, ids: list[str]) -> str | None:
     """Add ids to config.yml's top-level `disabledExtensions` list without a YAML parser.
-    Returns None when the existing value is a flow list we won't rewrite by hand."""
+    Returns None when the existing value isn't a block list (or empty) we can safely extend."""
     ids = [i for i in ids if not re.search(rf"^\s*-\s*['\"]?{re.escape(i)}['\"]?\s*$", text, re.M)]
     if not ids:
         return text
     m = re.search(r"^disabledExtensions:[ \t]*(\S.*)?\n?", text, re.M)
     if not m:
         return text.rstrip("\n") + ("\n" if text.strip() else "") + "disabledExtensions:\n" + "".join(f"  - {json.dumps(i)}\n" for i in ids)
-    if m.group(1) and m.group(1).strip() != "[]":
-        return None
-    nxt = re.match(r"([ \t]*)-", text[m.end():])
-    indent = nxt.group(1) if nxt else "  "
+    value = (m.group(1) or "").split("#")[0].strip()
+    if value not in ("", "[]"):
+        return None  # flow list or scalar: leave it to the user
+    # The items' indent comes from the first real line after the key: comments and blank lines
+    # in between can sit at any column and must not decide it.
+    nxt = next((l for l in text[m.end():].splitlines() if l.strip() and not l.lstrip().startswith("#")), None)
+    if value == "[]" or nxt is None or not nxt[0].isspace() and not nxt.startswith("-"):
+        indent = "  "  # empty list / null value: we start the list
+    elif nxt.lstrip().startswith("-"):
+        indent = nxt[:len(nxt) - len(nxt.lstrip())]
+    else:
+        return None  # an indented non-item (a mapping?) — not a list we understand
     items = "".join(f"{indent}- {json.dumps(i)}\n" for i in ids)
     return text[:m.start()] + "disabledExtensions:\n" + items + text[m.end():]
+
+
+def _yaml_ok(text: str) -> bool:
+    """False only when a YAML parser is installed and rejects the text."""
+    if yaml is None or not text.strip():
+        return True
+    try:
+        yaml.safe_load(text)
+        return True
+    except yaml.YAMLError:
+        return False
 
 
 def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
@@ -143,8 +167,11 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
         cfg = target / "config.yml"
         text = cfg.read_text() if cfg.is_file() else ""
         new = add_disabled(text, off)
+        if new is not None and new != text and not (_yaml_ok(text) and _yaml_ok(new)):
+            new = None  # never write into a config.yml omp can't parse, or one our edit would break
         if new is None:
-            p.gaps.append(f"config.yml has a flow-style disabledExtensions list: add {', '.join(off)} to it by hand")
+            p.gaps.append(f"config.yml: couldn't safely extend disabledExtensions (flow list or unparseable YAML): "
+                          f"add {', '.join(off)} to it by hand")
         elif new != text:
             if not cfg.exists() and (target / "settings.json").exists():
                 p.gaps.append("omp hasn't converted its legacy settings.json yet: start omp once, then re-run skills")
@@ -168,9 +195,11 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
                 p.add("prompts", "link", f"/{pr.name} → {pr.path}",
                       lambda dst=dst, src=pr.path: (dst.parent.mkdir(parents=True, exist_ok=True), dst.symlink_to(src)))
 
-    if "mcp" in parts and b.mcp:
-        mcp_path = target / "mcp.json"
-        mcp = pi._load(mcp_path, {})
+    mcp_path = target / "mcp.json"
+    mcp = pi._read_json(mcp_path) if "mcp" in parts and b.mcp else None
+    if "mcp" in parts and b.mcp and mcp is None:  # rewriting it would drop the user's other servers
+        p.gaps.append("mcp.json is not valid JSON: MCP servers were not merged; fix it and re-run")
+    if mcp is not None:
         servers = mcp.setdefault("mcpServers", {})
         native, added = _native_mcp_names(home), 0
         for s in b.mcp:
@@ -180,11 +209,13 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
             servers[s.name] = s.config
             added += 1
             secret = " (holds secrets → 0600 file)" if s.config.get("env") or s.config.get("headers") else ""
-            p.add("mcp", "write", f"{s.name}: {'http' if 'url' in s.config else 'stdio'}{secret}")
+            p.add("mcp", "write", f"{s.name}: {s.config.get('type') or ('http' if 'url' in s.config else 'stdio')}{secret}")
         if added:
             def write_mcp():
                 if mcp_path.is_file() and not list(target.glob("mcp.json.bak-*")):
                     pi._write_private(mcp_path.with_name(f"mcp.json.bak-{pi.STAMP}"), mcp_path.read_text())
+                if pi._read_json(mcp_path) is None:
+                    raise RuntimeError("mcp.json stopped parsing since the plan; left untouched")
                 pi._write_private(mcp_path, json.dumps(mcp, indent=2))
             p.add("mcp", "write", f"mcp.json: +{added} servers", write_mcp)
 

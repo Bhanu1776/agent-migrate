@@ -69,6 +69,8 @@ def _enabled_plugins(claude: Path, settings: dict) -> dict[str, Path]:
 
 def _bash_rule_to_regex(rule: str) -> str | None:
     """Claude permission rule `Bash(git push:*)` / `Bash(*prod*)` -> full-command regex."""
+    if rule.strip() == "Bash":  # the whole tool: every shell command
+        return "^[\\s\\S]*$"
     m = re.fullmatch(r"Bash\((.*)\)", rule.strip())
     if not m:
         return None
@@ -88,7 +90,7 @@ def _hooks_from(block: dict, origin: str, env: dict, gaps: list[str]) -> list[Ho
                     gaps.append(f"hook {event} ({origin}): type '{h.get('type')}' not supported")
                     continue
                 if not canon:
-                    gaps.append(f"hook {event} ({origin}): no equivalent event — `{h['command'][:60]}`")
+                    gaps.append(f"hook {event} ({origin}): no equivalent event in the target; not migrated")
                     continue
                 cmd = h["command"]
                 for k, v in env.items():
@@ -183,8 +185,8 @@ def read(home: Path) -> Bundle:
                 servers[name] = cfg
                 b.gaps.append(f"mcp '{name}' was project-scoped ({proj}); it becomes global")
     for name, cfg in servers.items():
-        cfg = {k: v for k, v in cfg.items() if k != "type"}
-        b.mcp.append(McpServer(name, cfg))
+        # Keep `type` (stdio/http/sse): SSE servers need it; each writer maps it to its schema.
+        b.mcp.append(McpServer(name, dict(cfg)))
 
     projects = claude / "projects"
     for d in sorted(projects.glob("*/memory")) if projects.is_dir() else []:

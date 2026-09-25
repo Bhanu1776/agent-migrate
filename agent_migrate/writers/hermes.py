@@ -30,7 +30,14 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from .. import guards as guard_lib
 from ..model import Bundle, Plan
+from .pi import _upsert_block
+
+try:  # stdlib-only tool: use a YAML parser to vet config.yaml only when one happens to be installed
+    import yaml
+except ImportError:
+    yaml = None
 
 DEFAULT_TARGET = "~/.hermes"
 STAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -50,16 +57,27 @@ HERMES_NOTES = """## Hermes mechanics (added by agent-migrate — the instructio
 
 GUARD_PY = '''#!/usr/bin/env python3
 """agent-migrate guard: Hermes pre_tool_call shell hook for migrated permission rules.
-Rules live in guards.json next to this file. deny -> block; ask -> Hermes approval prompt."""
+Rules live in guards.json next to this file. deny -> block; ask -> Hermes approval prompt.
+am_guards.py is a verbatim copy of agent_migrate/guards.py: every sub-command is checked,
+so `cd x && git push` still hits a `git push` rule."""
 import json, re, sys
 from pathlib import Path
 
+from am_guards import command_segments
+
 payload = json.load(sys.stdin)
 cmd = (payload.get("tool_input") or {}).get("command") or ""
-rules = [g for src in json.loads((Path(__file__).parent / "guards.json").read_text())["sources"].values() for g in src]
+segs = command_segments(cmd)
+rules = []
+for src in json.loads((Path(__file__).parent / "guards.json").read_text())["sources"].values():
+    for g in src:
+        try:
+            rules.append({**g, "rx": re.compile(g["pattern"])})
+        except re.error:  # a broken rule must not fail-closed every terminal call
+            print(f"agent-migrate: guard rule ({g.get('origin')}) has an invalid regex; skipped", file=sys.stderr)
 for action in ("deny", "ask"):
     for g in rules:
-        if g["action"] == action and re.search(g["pattern"], cmd):
+        if g["action"] == action and any(g["rx"].search(s) for s in segs):
             if action == "deny":
                 print(json.dumps({"action": "block", "message": f"Blocked by migrated rule ({g['origin']})"}))
             else:
@@ -71,16 +89,6 @@ print("{}")
 
 
 # ---------- small file helpers (same contract as the pi writer) ----------
-
-def _block(key: str, body: str) -> str:
-    return f"<!-- agent-migrate:{key}:start -->\n{body.strip()}\n<!-- agent-migrate:{key}:end -->"
-
-
-def _upsert_block(text: str, key: str, body: str) -> str:
-    new = _block(key, body)
-    rx = re.compile(rf"<!-- agent-migrate:{re.escape(key)}:start -->.*?<!-- agent-migrate:{re.escape(key)}:end -->", re.S)
-    return rx.sub(lambda _: new, text) if rx.search(text) else (text.rstrip() + "\n\n" + new + "\n").lstrip()
-
 
 def _write_private(path: Path, data: str):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +102,17 @@ def _backup_once(path: Path):
     """Back up a file we're about to modify for the first time (no marker of ours inside yet)."""
     if path.is_file() and "agent-migrate:" not in path.read_text(errors="replace"):
         shutil.copy2(path, path.with_name(f"{path.name}.bak-{STAMP}"))
+
+
+def _yaml_ok(text: str) -> bool:
+    """False only when a YAML parser is installed and rejects the text."""
+    if yaml is None or not text.strip():
+        return True
+    try:
+        yaml.safe_load(text)
+        return True
+    except yaml.YAMLError:
+        return False
 
 
 def _read(path: Path) -> str:
@@ -245,7 +264,10 @@ def _mcp_entry(name: str, cfg: dict, secrets: dict) -> dict:
 
 
 def _dotenv_line(var: str, value: str) -> str:
-    # Single quotes: python-dotenv does no escapes or ${} expansion there. Fall back to double quotes.
+    # Hermes expands ${NAME} in every .env value, quoted or not (hermes_cli/env_loader.py), and dotenv
+    # has no escape for it. `${:-$}` (empty name, default "$") resolves to a lone "$" in one pass, so
+    # `${:-$}{HOME}` loads as the literal `${HOME}`. Single quotes take no backslash escapes at all.
+    value = value.replace("${", "${:-$}{")
     if "'" not in value and "\n" not in value:
         return f"{var}='{value}'"
     return var + '="' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
@@ -323,8 +345,13 @@ def _regex_to_globs(rx: str) -> list[str] | None:
 
 
 def _visible_skills(root: Path) -> set[str]:
-    names = set()
-    for dirpath, _, files in os.walk(root, followlinks=True) if root.is_dir() else []:
+    names, seen = set(), set()
+    for dirpath, dirs, files in os.walk(root, followlinks=True) if root.is_dir() else []:
+        real = os.path.realpath(dirpath)
+        if real in seen:  # a symlink loop (skills/x/up -> skills) would walk forever
+            dirs[:] = []
+            continue
+        seen.add(real)
         if "SKILL.md" in files:
             names.add(Path(dirpath).name)
     return names
@@ -453,13 +480,14 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
             entry = {"command": _hook_command(h.command, h.env)}
             if matcher and h.event in ("pre_tool", "post_tool"):
                 entry = {"matcher": matcher, **entry}
-            label = f"{HOOK_EVENTS[h.event]}{f' [{matcher}]' if matcher else ''} ({h.origin}): {h.command[:70]}"
+            # Never the command text: it can carry tokens, and plans are printed.
+            label = f"{HOOK_EVENTS[h.event]}{f' [{matcher}]' if matcher else ''} ({h.origin})"
             if entry in done_hooks.get(HOOK_EVENTS[h.event], []):
                 p.add("hooks", "skip", label)
                 continue
             tool_hooks |= h.event in ("pre_tool", "post_tool")
             want["hooks"].setdefault(HOOK_EVENTS[h.event], []).append(entry)
-            p.add("hooks", "write", f"{HOOK_EVENTS[h.event]}{f' [{matcher}]' if matcher else ''} ({h.origin}): {h.command[:70]}")
+            p.add("hooks", "write", label)
         if tool_hooks:
             p.gaps.append("tool hooks get Hermes tool names in tool_name (terminal, write_file, patch, ...): "
                           "fix scripts that compare against Claude names like Bash")
@@ -489,6 +517,7 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
                 gdir.mkdir(parents=True, exist_ok=True)
                 (gdir / "guards.json").write_text(json.dumps(data, indent=2))
                 (gdir / "guard.py").write_text(GUARD_PY)
+                (gdir / "am_guards.py").write_text(Path(guard_lib.__file__).read_text())
 
             if json.loads(_read(gdir / "guards.json") or "{}").get("sources", {}).get(b.source) == scripted:
                 p.add("guards", "skip", "agent-migrate/guards.json: up to date")
@@ -503,12 +532,21 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
                       "(or `hermes --accept-hooks`), then check with `hermes hooks list`")
 
     new_cfg, leftovers = _merge_config(cfg_text, want)
+    # ponytail: without PyYAML a broken config.yaml can't be detected; we still only splice text into it.
+    if new_cfg != cfg_text and not (_yaml_ok(cfg_text) and _yaml_ok(new_cfg)):
+        # Never write into a file Hermes can't parse (or that our splice would break): hand it all over.
+        p.gaps.append(("config.yaml does not parse as YAML" if not _yaml_ok(cfg_text) else
+                       "merging into config.yaml would break its YAML") + ": it was left untouched")
+        new_cfg, leftovers = cfg_text, {k: v for k, v in want.items() if v}
     if new_cfg != cfg_text:
         keys = ", ".join(k for k, v in want.items() if v)
 
         def write_cfg():
             _backup_once(cfg_path)
-            text, _ = _merge_config(_read(cfg_path), want)  # re-merge against what's on disk now
+            cur = _read(cfg_path)
+            text, _ = _merge_config(cur, want)  # re-merge against what's on disk now
+            if not (_yaml_ok(cur) and _yaml_ok(text)):
+                raise RuntimeError("config.yaml stopped parsing since the plan; left untouched")
             _write_private(cfg_path, text)
 
         p.add("settings", "write", f"config.yaml ({keys})", write_cfg)

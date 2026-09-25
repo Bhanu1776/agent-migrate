@@ -35,21 +35,41 @@ const exts = session.resourceLoader.getExtensions().extensions.map((e) => e.path
 check(exts.some((p) => p.endsWith("agent-migrate-bridge.ts")), "bridge extension loads");
 check(session.resourceLoader.getExtensions().errors?.length === 0 || !session.resourceLoader.getExtensions().errors, "no extension load errors");
 
-await r.emit({ type: "session_start", reason: "startup" });
-const res = await r.emitBeforeAgentStart("hi", undefined, { cwd, sections: {} });
-const sections = res?.systemPromptOptions?.sections ?? {};
 const bridge = JSON.parse((await import("node:fs")).readFileSync(join(agentDir, "agent-migrate/bridge.json"), "utf8"));
-check(/persistent file-based memory/.test(sections.memory ?? ""), `memory section injected (${(sections.memory ?? "").length} chars)`);
+const allGuards = Object.values(bridge.sources).flatMap((s) => s.guards);
 const startHooks = Object.values(bridge.sources).flatMap((s) => s.hooks).filter((h) => h.event === "session_start").length;
-check(!startHooks || (sections.session_start_context ?? "").length > 0, `SessionStart output injected (${startHooks} hooks, ${(sections.session_start_context ?? "").length} chars)`);
-for (const g of Object.values(bridge.sources).flatMap((s) => s.guards)) {
-  // Build a command the rule must catch: literal pieces of the regex, joined.
-  const sample = g.pattern.replace(/^\^|\$$/g, "").replace(/\(\\s\.\*\)\?/g, " x").replace(/\.\*/g, "x").replace(/\\(.)/g, "$1");
-  const out = await r.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "t", input: { command: sample } });
-  check(out?.block === true, `guard blocks \`${sample}\` (${g.action}, no UI)`);
+const prompt = async () => (await r.emitBeforeAgentStart("hi", undefined, { cwd, sections: {} }))?.systemPromptOptions?.sections ?? {};
+
+// Headless first (like `pi -p` subagents): guards fail closed, SessionStart hooks stay quiet.
+await r.emit({ type: "session_start", reason: "startup" });
+let sections = await prompt();
+check(/persistent file-based memory/.test(sections.memory ?? ""), `memory section injected (${(sections.memory ?? "").length} chars)`);
+check(!sections.session_start_context, "headless run skips SessionStart hooks");
+// Build a command each rule must catch, then hide it behind a compound/wrapper form too.
+const sampleFor = (g) => g.pattern.replace(/^\^|\$$/g, "").replace(/\(\\s\.\*\)\?/g, " x").replace(/\[\\s\\S\]\*/g, "x").replace(/\.\*/g, "x").replace(/\\(.)/g, "$1") || "x";
+for (const g of allGuards) {
+  for (const cmd of [sampleFor(g), `cd /tmp && env A=1 ${sampleFor(g)}`]) {
+    const out = await r.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "t", input: { command: cmd } });
+    check(out?.block === true, `guard blocks \`${cmd}\` (${g.action}, no UI)`);
+  }
 }
 const safe = await r.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "t", input: { command: "ls" } });
-check(!safe?.block, "plain `ls` is not blocked");
+check(!safe?.block || allGuards.some((g) => g.pattern === "^[\\s\\S]*$"), "plain `ls` is not blocked");
+
+// Interactive: SessionStart output reaches the prompt; "ask" rules follow the user's answer.
+let answer = true;
+const ui = new Proxy({ confirm: async () => answer, notify: () => {} }, { get: (t, k) => t[k] ?? (() => undefined) });
+r.setUIContext(ui, "tui");
+await r.emit({ type: "session_start", reason: "startup" });
+sections = await prompt();
+check(!startHooks || (sections.session_start_context ?? "").length > 0, `SessionStart output injected with UI (${startHooks} hooks, ${(sections.session_start_context ?? "").length} chars)`);
+for (const g of allGuards) {
+  answer = true;
+  const yes = await r.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "t", input: { command: sampleFor(g) } });
+  answer = false;
+  const no = await r.emitToolCall({ type: "tool_call", toolName: "bash", toolCallId: "t", input: { command: sampleFor(g) } });
+  check(g.action === "deny" ? yes?.block && no?.block : !yes?.block && no?.block, `${g.action} rule with UI: ${g.action === "deny" ? "always blocked" : "runs on yes, blocked on no"}`);
+}
 
 const root = join(agentDir, "sessions");
 const files = existsSync(root) ? readdirSync(root).flatMap((d) => readdirSync(join(root, d)).map((f) => join(root, d, f))) : [];

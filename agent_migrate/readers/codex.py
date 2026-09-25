@@ -25,10 +25,17 @@ from ..model import Bundle, Guard, Hook, McpServer, MemoryDir, Message, Prompt, 
 _HOOK_EVENTS = {"session_start": "session_start", "pre_tool_use": "pre_tool",
                 "post_tool_use": "post_tool", "stop": "stop", "session_end": "session_end"}
 
-# A user message is Codex-injected context if it starts with one of these.
-_INJECTED = re.compile(r"^\s*(# AGENTS\.md instructions|<([A-Za-z_][\w-]*)[ >][\s\S]*</\2>\s*$)")
+# A user message is Codex-injected context if it is one of these. Only tags Codex is known to
+# inject (seen in real rollouts), so a user who types `<task>do x</task>` keeps their message.
+_INJECTED_TAGS = r"environment_context|user_instructions|recommended_plugins|skill|user_action|turn_aborted|in-app-browser-context"
+_INJECTED = re.compile(rf"^\s*(# AGENTS\.md instructions|<({_INJECTED_TAGS})[ >][\s\S]*</\2>\s*$)")
 
 _TOOL_ARG_MAX = 200
+
+
+def _iso_from_ms(ms: int) -> str:
+    # Some rollouts have no session_meta timestamp; writers need a real ISO date for file names.
+    return datetime.fromtimestamp(ms / 1000).astimezone().isoformat()
 
 
 def read(home: Path) -> Bundle:
@@ -293,8 +300,8 @@ def _session(f: Path, titles: dict[str, str]) -> Session | None:
                     args = p.get("arguments") if pt == "function_call" else p.get("input")
                     args = " ".join(str(args or "").split())[:_TOOL_ARG_MAX]
                     add("assistant", f"→ {p.get('name', '?')}: {args}", ts)
-    if not any(m.role == "user" for m in msgs):
+    if not any(m.role == "user" for m in msgs) or not meta.get("cwd"):  # no project dir: nowhere to file it
         return None
     sid = meta.get("id") or f.stem.split("-", 6)[-1]
-    return Session(id=sid, cwd=meta.get("cwd", ""), started=meta.get("timestamp", ""),
+    return Session(id=sid, cwd=meta.get("cwd", ""), started=meta.get("timestamp") or _iso_from_ms(msgs[0].ts_ms if msgs else 0),
                    messages=msgs, title=titles.get(sid))

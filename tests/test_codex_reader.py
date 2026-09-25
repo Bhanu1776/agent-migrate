@@ -139,5 +139,25 @@ class CodexReaderTest(unittest.TestCase):
         self.assertEqual(users[0].ts_ms, 1790322078000)
 
 
+    def _one(self, text, meta_ts=True):
+        day = self.home / ".codex" / "sessions" / "2026" / "09" / "26"
+        day.mkdir(parents=True, exist_ok=True)
+        body = rollout(text).replace("sid-1", "sid-9")
+        if not meta_ts:
+            body = body.replace(', "timestamp": "2026-09-25T07:41:13.411Z"', "")
+        (day / "rollout-2026-09-26T00-00-00-sid-9.jsonl").write_text(body)
+        return next(s for s in read(self.home).sessions() if s.id == "sid-9")
+
+    def test_user_typed_xml_is_kept(self):
+        # Only tags Codex injects are context; a user's own <task>..</task> is a real message.
+        s = self._one("<task>ship it</task>")
+        self.assertIn("<task>ship it</task>", [m.text for m in s.messages if m.role == "user"])
+
+    def test_missing_meta_timestamp_still_has_a_start_date(self):
+        # Writers build file names and dates from `started`; "" crashed the opencode export.
+        s = self._one("hi", meta_ts=False)
+        self.assertTrue(s.started.startswith("2026-09-25"), s.started)
+
+
 if __name__ == "__main__":
     unittest.main()

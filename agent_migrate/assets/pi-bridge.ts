@@ -16,15 +16,47 @@ type Guard = { pattern: string; action: "ask" | "deny"; origin?: string };
 const AGENT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const MEMORY_ROOT = join(AGENT_DIR, "memory");
 
-function loadBridge(): { hooks: Hook[]; guards: Guard[] } {
+type CompiledGuard = Guard & { rx: RegExp };
+
+// A rule that doesn't compile must not take the whole extension down; it's dropped and
+// reported once at session start instead.
+function loadBridge(): { hooks: Hook[]; guards: CompiledGuard[]; broken: string[] } {
   try {
     const data = JSON.parse(readFileSync(join(AGENT_DIR, "agent-migrate", "bridge.json"), "utf8"));
     const sources = Object.values(data.sources ?? {}) as Array<{ hooks?: Hook[]; guards?: Guard[] }>;
-    return { hooks: sources.flatMap((s) => s.hooks ?? []), guards: sources.flatMap((s) => s.guards ?? []) };
+    const guards: CompiledGuard[] = [];
+    const broken: string[] = [];
+    for (const g of sources.flatMap((s) => s.guards ?? [])) {
+      try {
+        guards.push({ ...g, rx: new RegExp(g.pattern) });
+      } catch {
+        broken.push(g.origin ?? g.pattern);
+      }
+    }
+    return { hooks: sources.flatMap((s) => s.hooks ?? []), guards, broken };
   } catch {
-    return { hooks: [], guards: [] };
+    return { hooks: [], guards: [], broken: [] };
   }
 }
+
+// Mirror of agent_migrate/guards.py command_segments(): keep them identical.
+function commandSegments(cmd: string, depth = 0): string[] {
+  const out = [cmd];
+  if (depth > 3) return out;
+  for (const m of cmd.matchAll(/\$\(([^)]*)\)|`([^`]*)`/g)) out.push(...commandSegments(m[1] ?? m[2] ?? "", depth + 1));
+  for (const part of cmd.split(/\n|;|&&|\|\||\||&/)) {
+    let s = part.trim();
+    for (;;) {
+      let t = s.replace(/^[({'"]+/, "").replace(/[)}'"]+$/, "").trim();
+      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo|env|command|builtin|exec|nohup|time|nice)(?:\s+-\S+)*(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh\s+-c\s+['"]?/, "").trim();
+      if (t === s) break;
+      s = t;
+    }
+    if (s) out.push(s);
+  }
+  return out;
+}
+
 
 // Claude's project slug; memory dirs migrated from Claude keep that name.
 const slug = (p: string) => p.replace(/[^a-zA-Z0-9]/g, "-");
@@ -97,14 +129,25 @@ function claudeInput(input: Record<string, unknown>): Record<string, unknown> {
   return { ...rest, ...(path !== undefined && { file_path: path }), ...(oldText !== undefined && { old_string: oldText }), ...(newText !== undefined && { new_string: newText }) };
 }
 
-const matches = (h: Hook, claudeName: string) => !h.matcher || h.matcher === "*" || new RegExp(`^(?:${h.matcher})$`).test(claudeName);
+function matches(h: Hook, claudeName: string): boolean {
+  if (!h.matcher || h.matcher === "*") return true;
+  try {
+    return new RegExp(`^(?:${h.matcher})$`).test(claudeName);
+  } catch {
+    return false; // an invalid matcher never fires; it must not break every tool call
+  }
+}
 
 export default function (pi: ExtensionAPI) {
-  const { hooks, guards } = loadBridge();
+  const { hooks, guards, broken } = loadBridge();
   const on = (e: string) => hooks.filter((h) => h.event === e);
   let startContext = "";
 
   pi.on("session_start", async (event, ctx) => {
+    if (broken.length && ctx.hasUI) ctx.ui.notify(`agent-migrate: ${broken.length} guard rule(s) have an invalid regex and are OFF: ${broken.join(", ")}`, "warning");
+    // Claude runs SessionStart/Stop for the main agent only; headless runs (pi -p delegations)
+    // would otherwise re-fire notification-style hooks for every subagent.
+    if (!ctx.hasUI) return;
     const outs = await Promise.all(
       on("session_start").map((h) => runHook(h, { hook_event_name: "SessionStart", source: event.reason, cwd: ctx.cwd }, ctx.cwd, 10_000)),
     );
@@ -132,7 +175,7 @@ export default function (pi: ExtensionAPI) {
     if (isToolCallEventType("bash", event)) {
       const cmd = event.input.command;
       for (const g of guards) {
-        if (!new RegExp(g.pattern).test(cmd)) continue;
+        if (!commandSegments(cmd).some((seg) => g.rx.test(seg))) continue;
         const what = g.origin ? ` (${g.origin})` : "";
         if (g.action === "deny") return { block: true, reason: `Blocked by migrated rule${what}.` };
         // Nobody to ask (print mode, subagents) means fail closed.
@@ -160,6 +203,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (_e, ctx) => {
+    if (!ctx.hasUI) return;
     for (const h of on("stop")) void runHook(h, { hook_event_name: "Stop", cwd: ctx.cwd }, ctx.cwd, 30_000);
   });
 

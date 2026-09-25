@@ -114,5 +114,76 @@ class ClaudeToPi(unittest.TestCase):
         self.assertEqual(len(list(self.target.glob("AGENTS.md.bak-*"))), 1)
 
 
+class ReviewRegressions(ClaudeToPi):
+    """Fable review findings for the pi writer; each failed before the fix."""
+
+    def _settings(self, extra):
+        s = json.loads((self.home / ".claude" / "settings.json").read_text())
+        s.update(extra)
+        _w(self.home / ".claude" / "settings.json", json.dumps(s))
+
+    def test_1_broken_json_is_never_clobbered(self):
+        broken_settings = '{"packages": ["npm:pi-mcp-adapter"], "model": "x",}'
+        broken_mcp = '{"mcpServers": {"mine": {"command": "x"}},}'
+        _w(self.target / "settings.json", broken_settings)
+        _w(self.target / "mcp.json", broken_mcp)
+        code, out = self.run_cli()
+        self.assertEqual((self.target / "settings.json").read_text(), broken_settings, "user's other keys would be lost")
+        self.assertEqual((self.target / "mcp.json").read_text(), broken_mcp)
+        self.assertIn("is not valid JSON", out)
+
+    def test_1_first_change_to_settings_is_backed_up(self):
+        self.run_cli()
+        [bak] = self.target.glob("settings.json.bak-*")
+        self.assertEqual(json.loads(bak.read_text()), {"packages": ["npm:pi-mcp-adapter"]})
+        self.run_cli()
+        self.assertEqual(len(list(self.target.glob("settings.json.bak-*"))), 1, "re-runs must not pile up backups")
+
+    def test_3_invalid_hook_matcher_is_a_gap_not_a_crash(self):
+        self._settings({"hooks": {"PreToolUse": [{"matcher": "mcp__(", "hooks": [{"type": "command", "command": "x"}]}]}})
+        code, out = self.run_cli("--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("not a valid regex", out)
+
+    def test_4_markers_inside_instructions_do_not_nest(self):
+        self.run_cli()
+        # User symlinks CLAUDE.md to the migrated file, then migrates again (twice).
+        _w(self.home / ".claude" / "CLAUDE.md", (self.target / "AGENTS.md").read_text())
+        self.run_cli()
+        once = (self.target / "AGENTS.md").read_text()
+        self.run_cli()
+        self.assertEqual((self.target / "AGENTS.md").read_text(), once, "each run must not grow the file")
+
+    def test_5_sse_servers_keep_their_transport(self):
+        _w(self.home / ".claude.json", json.dumps({"mcpServers": {"old": {"type": "sse", "url": "https://x/sse"}}}))
+        self.run_cli()
+        cfg = json.loads((self.target / "mcp.json").read_text())["mcpServers"]["old"]
+        self.assertEqual(cfg.get("httpTransport"), "sse")
+        self.assertNotIn("type", cfg, "pi-mcp-adapter has no `type` key")
+
+    def test_8_trial_target_does_not_run_npm(self):
+        _w(self.target / "settings.json", "{}")
+        code, out = self.run_cli("--dry-run")
+        self.assertNotIn("run   pi install", out)
+        self.assertIn("pi-mcp-adapter not installed in this target", out)
+
+    def test_9_hook_commands_are_not_printed(self):
+        self._settings({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "curl -H 'Authorization: Bearer tok-SECRET'"}]}],
+                                  "Notification": [{"hooks": [{"type": "command", "command": "notify tok-SECRET"}]}]}})
+        code, out = self.run_cli()
+        self.assertNotIn("tok-SECRET", out, "hook commands can carry tokens")
+
+    def test_12_chats_are_owner_only(self):
+        self.run_cli()
+        [chat] = list((self.target / "sessions").rglob("*.jsonl"))
+        self.assertEqual(stat.S_IMODE(os.stat(chat).st_mode), 0o600, "chats can hold pasted secrets")
+
+    def test_13_bare_bash_deny_is_migrated(self):
+        self._settings({"permissions": {"deny": ["Bash"]}})
+        self.run_cli()
+        guards = json.loads((self.target / "agent-migrate" / "bridge.json").read_text())["sources"]["claude-code"]["guards"]
+        self.assertEqual([g["action"] for g in guards], ["deny"])
+
+
 if __name__ == "__main__":
     unittest.main()

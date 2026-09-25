@@ -12,9 +12,6 @@ from typing import Callable, Iterator
 
 PARTS = ("instructions", "skills", "prompts", "mcp", "memory", "hooks", "guards", "sessions")
 
-# Canonical hook events. Anything else a reader finds becomes a gap note, not a Hook.
-HOOK_EVENTS = ("session_start", "pre_tool", "post_tool", "stop", "session_end")
-
 
 @dataclass
 class Skill:
@@ -32,14 +29,17 @@ class Prompt:
 @dataclass
 class McpServer:
     name: str
-    # Claude/.mcp.json shape: {command, args, env} for stdio, {url, headers} for http.
+    # Claude/.mcp.json shape: {type?, command, args, env} for stdio, {type?, url, headers} for
+    # http/sse. `type` ("stdio" | "http" | "sse") is optional; writers map it to their schema.
     # May hold secrets: writers must only put it in 0600 files and never print values.
     config: dict
 
 
 @dataclass
 class Hook:
-    event: str  # one of HOOK_EVENTS
+    # Canonical events: session_start, pre_tool, post_tool, stop, session_end.
+    # Anything else a reader finds becomes a gap line, not a Hook.
+    event: str
     command: str  # shell command; gets Claude-style JSON on stdin
     matcher: str | None = None  # regex on Claude tool names (Bash, Read, Edit, Write...)
     env: dict = field(default_factory=dict)  # e.g. CLAUDE_PLUGIN_ROOT for plugin hooks

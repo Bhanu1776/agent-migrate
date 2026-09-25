@@ -39,6 +39,10 @@ def _block(key: str, body: str) -> str:
 
 
 def _upsert_block(text: str, key: str, body: str) -> str:
+    # Source text can already hold our markers (e.g. CLAUDE.md symlinked to a migrated
+    # AGENTS.md). Left as-is, the non-greedy match stops at the inner end marker and every
+    # run nests one level deeper, so neutralise them before embedding.
+    body = body.replace("<!-- agent-migrate:", "<!-- agent-migrate(source):")
     new = _block(key, body)
     rx = re.compile(rf"<!-- agent-migrate:{re.escape(key)}:start -->.*?<!-- agent-migrate:{re.escape(key)}:end -->", re.S)
     return rx.sub(lambda _: new, text) if rx.search(text) else (text.rstrip() + "\n\n" + new + "\n").lstrip()
@@ -57,6 +61,25 @@ def _load(path: Path, default):
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return default
+
+
+def _read_json(path: Path) -> dict | None:
+    """{} when the file is missing, None when it exists but isn't valid JSON (or isn't an
+    object). Callers must treat None as "don't touch": rewriting it would drop the user's
+    other keys."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _backup_once(path: Path):
+    """Keep the user's original next to it before our first change; later runs don't pile up copies."""
+    if path.is_file() and not list(path.parent.glob(f"{path.name}.bak-*")):
+        shutil.copy2(path, path.with_name(f"{path.name}.bak-{STAMP}"))
 
 
 def _visible_skill_names(home: Path, target: Path) -> dict[str, Path]:
@@ -97,7 +120,11 @@ def _session_lines(s, api, provider) -> list[dict]:
 def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     p = Plan(gaps=list(b.gaps))
     settings_path = target / "settings.json"
-    settings = _load(settings_path, {})
+    settings = _read_json(settings_path)
+    settings_ok = settings is not None
+    if not settings_ok:  # broken JSON: never rewrite it (it would drop the user's other keys)
+        p.gaps.append(f"{settings_path} is not valid JSON: skill switches and pi-mcp-adapter install skipped; fix it and re-run")
+        settings = {}
     settings_before = json.dumps(settings, sort_keys=True)
 
     # --- instructions: one owned block per source, so claude + codex runs can coexist.
@@ -146,21 +173,37 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     # --- mcp: merge into pi-mcp-adapter's file. Values may be secrets: 0600, never printed.
     if "mcp" in parts and b.mcp:
         mcp_path = target / "mcp.json"
-        mcp = _load(mcp_path, {})
+        mcp = _read_json(mcp_path)
+        if mcp is None:
+            p.gaps.append(f"{mcp_path} is not valid JSON: MCP servers not added; fix it and re-run")
+            mcp = {}
+            mcp_writable = False
+        else:
+            mcp_writable = True
         servers = mcp.setdefault("mcpServers", {})
         added = []
         for s in b.mcp:
             if s.name in servers:
                 p.add("mcp", "skip", f"{s.name}: already configured")
-            else:
-                servers[s.name] = {**s.config, "directTools": True}
+            elif mcp_writable:
+                # pi-mcp-adapter picks the transport itself (streamable HTTP, falls back to SSE);
+                # it has no `type`, only an explicit `httpTransport` override.
+                cfg = {k: v for k, v in s.config.items() if k != "type"}
+                if s.config.get("type") == "sse":
+                    cfg["httpTransport"] = "sse"
+                servers[s.name] = {**cfg, "directTools": True}
                 added.append(s.name)
                 secret = " (holds secrets → 0600 file)" if s.config.get("env") or s.config.get("headers") else ""
                 p.add("mcp", "write", f"{s.name}: {'http' if 'url' in s.config else 'stdio'}{secret}")
         if added:
-            p.add("mcp", "write", f"mcp.json: +{len(added)} servers", lambda: _write_private(mcp_path, json.dumps(mcp, indent=2)))
-        if not any(str(x).startswith("npm:pi-mcp-adapter") for x in settings.get("packages", [])):
-            if shutil.which("pi"):
+            p.add("mcp", "write", f"mcp.json: +{len(added)} servers",
+                  lambda: (_backup_once(mcp_path), _write_private(mcp_path, json.dumps(mcp, indent=2))))
+        installed = any(str(x).startswith("npm:pi-mcp-adapter") for x in settings.get("packages", []))
+        if not installed and settings_ok:
+            # Installing hits npm and the network; only do it for the real pi dir, not a trial run.
+            if target.expanduser().resolve() != Path(DEFAULT_TARGET).expanduser().resolve():
+                p.gaps.append(f"pi-mcp-adapter not installed in this target: run `PI_CODING_AGENT_DIR={target} pi install npm:pi-mcp-adapter`")
+            elif shutil.which("pi"):
                 p.add("mcp", "run", "pi install npm:pi-mcp-adapter",
                       lambda: subprocess.run(["pi", "install", "npm:pi-mcp-adapter"], check=True,
                                              env={**os.environ, "PI_CODING_AGENT_DIR": str(target)}))
@@ -190,11 +233,17 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
     if want_bridge:
         hooks = []
         for h in (b.hooks if "hooks" in parts else []):
-            if h.matcher and not any(re.fullmatch(h.matcher, t) for t in PI_TOOLS_AS_CLAUDE) and h.matcher != "*":
+            try:
+                fires = not h.matcher or h.matcher == "*" or any(re.fullmatch(h.matcher, t) for t in PI_TOOLS_AS_CLAUDE)
+            except re.error:
+                p.gaps.append(f"hook {h.event} ({h.origin}): matcher {h.matcher!r} is not a valid regex; skipped")
+                continue
+            if not fires:
                 p.gaps.append(f"hook {h.event} [{h.matcher}] ({h.origin}): pi has no such tool; skipped")
                 continue
             hooks.append({"event": h.event, "command": h.command, "matcher": h.matcher, "env": h.env})
-            p.add("hooks", "write", f"{h.event}{f' [{h.matcher}]' if h.matcher else ''} ({h.origin}): {h.command[:70]}")
+            # Only event/matcher/origin on screen: hook commands can carry tokens.
+            p.add("hooks", "write", f"{h.event}{f' [{h.matcher}]' if h.matcher else ''} ({h.origin})")
         guards = [{"pattern": g.pattern, "action": g.action, "origin": g.origin} for g in (b.guards if "guards" in parts else [])]
         for g in guards:
             p.add("guards", "write", f"{g['action']:4} {g['origin']}")
@@ -223,16 +272,22 @@ def plan(b: Bundle, target: Path, home: Path, parts: set[str]) -> Plan:
                 if s.id not in todo:
                     continue
                 out = sess_root / _sessions_dir(s.cwd) / f"{re.sub(r'[:.]', '-', s.started)}_{s.id}.jsonl"
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text("".join(json.dumps(x) + "\n" for x in _session_lines(s, api, provider)))
+                # Chats can hold pasted secrets: owner-only, like opencode's exports.
+                _write_private(out, "".join(json.dumps(x) + "\n" for x in _session_lines(s, api, provider)))
 
         if todo:
             p.add("sessions", "write", f"{len(todo)} chats (text + short tool-call lines)", write_sessions)
         if have:
             p.add("sessions", "skip", f"{len(have)} chats already in pi")
 
-    if json.dumps(settings, sort_keys=True) != settings_before:
-        p.add("settings", "write", "settings.json (skill switches)",
-              lambda: (settings_path.parent.mkdir(parents=True, exist_ok=True),
-                       settings_path.write_text(json.dumps({**_load(settings_path, {}), "skills": settings["skills"]}, indent=2))))
+    if settings_ok and json.dumps(settings, sort_keys=True) != settings_before:
+        def write_settings():
+            current = _read_json(settings_path)  # re-read: `pi install` may have added packages
+            if current is None:
+                raise RuntimeError(f"{settings_path} became invalid JSON; not touching it")
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            _backup_once(settings_path)
+            settings_path.write_text(json.dumps({**current, "skills": settings["skills"]}, indent=2))
+
+        p.add("settings", "write", "settings.json (skill switches)", write_settings)
     return p
