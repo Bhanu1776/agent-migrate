@@ -21,7 +21,7 @@ _WRAPPER = re.compile(
     r"|exec(?:\s+-a\s+\S+|\s+-\S+)*|xargs(?:\s+-[IdEeLnPs]\s+\S+|\s+-\S+)*|(?:command|builtin|nohup|time|eval)(?:\s+-\S+)*)(?:\s+|$)")
 # `sh -c 'a && b'` is split like any other command (splitting ignores quotes), so the
 # `sh -c '` opener is just one more wrapper to peel off.
-_SHELL_C = re.compile(r"^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z-]+)*?\s+-[A-Za-z]*c\s+['\"]?")
+_SHELL_C = re.compile(r"^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z][\w-]*)*?\s+-[A-Za-z]*c\s+['\"]?")
 _SUBST = re.compile(r"\$\(([^)]*)\)|`([^`]*)`")
 
 
@@ -61,7 +61,7 @@ function commandSegments(cmd: string, depth = 0): string[] {
     let s = part.trim();
     for (;;) {
       let t = s.replace(/^[({'"]+/, "").replace(/[)}'"]+$/, "").trim();
-      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo(?:\s+-[ugCDhpRrTt]\s+\S+|\s+-\S+)*|nice(?:\s+-n\s+\S+|\s+-\S+)*|env(?:\s+-[uSC]\s+\S+|\s+-\S+)*|exec(?:\s+-a\s+\S+|\s+-\S+)*|xargs(?:\s+-[IdEeLnPs]\s+\S+|\s+-\S+)*|(?:command|builtin|nohup|time|eval)(?:\s+-\S+)*)(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z-]+)*?\s+-[A-Za-z]*c\s+['"]?/, "").trim();
+      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo(?:\s+-[ugCDhpRrTt]\s+\S+|\s+-\S+)*|nice(?:\s+-n\s+\S+|\s+-\S+)*|env(?:\s+-[uSC]\s+\S+|\s+-\S+)*|exec(?:\s+-a\s+\S+|\s+-\S+)*|xargs(?:\s+-[IdEeLnPs]\s+\S+|\s+-\S+)*|(?:command|builtin|nohup|time|eval)(?:\s+-\S+)*)(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z][\w-]*)*?\s+-[A-Za-z]*c\s+['"]?/, "").trim();
       if (t === s) break;
       s = t;
     }

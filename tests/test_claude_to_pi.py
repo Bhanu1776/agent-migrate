@@ -154,17 +154,29 @@ class ReviewRegressions(ClaudeToPi):
         self.run_cli()
         self.assertEqual((self.target / "AGENTS.md").read_text(), once, "each run must not grow the file")
 
-    def test_4_symlinked_source_is_stable(self):
-        # Live loop: CLAUDE.md *is* the migrated AGENTS.md. Each run must give the same file.
+    def test_4_symlinked_source_is_stable_and_keeps_user_text(self):
+        # Live loop: CLAUDE.md *is* the migrated AGENTS.md. The user's rules must survive
+        # and every run must give the same file as the first one.
         self.run_cli()
+        first = (self.target / "AGENTS.md").read_text()
         claude_md = self.home / ".claude" / "CLAUDE.md"
         claude_md.unlink()
         claude_md.symlink_to(self.target / "AGENTS.md")
+        for _ in range(3):
+            self.run_cli()
+            now = (self.target / "AGENTS.md").read_text()
+            self.assertIn("Always be kind.", now, "the fix for nesting must not delete what the user wrote")
+            self.assertEqual(now, first)
+
+    def test_4_crossed_markers_never_cut_text(self):
+        # Markers of another key in the source (hand-copied, unbalanced) must not cut text.
+        _w(self.home / ".claude" / "CLAUDE.md", "top\n<!-- agent-migrate:other:start -->\nmine\n<!-- agent-migrate:x:end -->\nend")
         self.run_cli()
-        once = (self.target / "AGENTS.md").read_text()
         self.run_cli()
-        self.run_cli()
-        self.assertEqual((self.target / "AGENTS.md").read_text(), once)
+        text = (self.target / "AGENTS.md").read_text()
+        for word in ("top", "mine", "end", "My own pi notes."):
+            self.assertIn(word, text)
+        self.assertEqual(text.count("mine"), 1, "must not grow")
 
     def test_5_sse_servers_keep_their_transport(self):
         _w(self.home / ".claude.json", json.dumps({"mcpServers": {"old": {"type": "sse", "url": "https://x/sse"}}}))

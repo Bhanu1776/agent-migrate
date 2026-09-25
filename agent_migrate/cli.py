@@ -35,6 +35,12 @@ def main(argv=None):
     target = Path(a.target or writer.DEFAULT_TARGET).expanduser()
 
     bundle = import_module(f".readers.{READERS[a.source]}", __package__).read(home)
+    if bundle.instructions and f"<!-- agent-migrate:{bundle.source}:start -->" in bundle.instructions:
+        # The source instructions contain our own output (e.g. CLAUDE.md symlinked to the
+        # migrated AGENTS.md). Re-embedding it would pull the target into itself every run.
+        bundle.gaps.append(f"{a.source} instructions already contain a block written by agent-migrate "
+                           "(is the source file a symlink or copy of the target?); instructions skipped, nothing changed")
+        bundle.instructions = None
     plan = writer.plan(bundle, target, home, parts)
 
     print(f"{a.source} → {a.dest}   target: {target}{'   (DRY RUN — nothing is written)' if a.dry_run else ''}\n")

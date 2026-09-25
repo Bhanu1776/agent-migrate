@@ -41,6 +41,14 @@ class Guards(unittest.TestCase):
     def test_bare_bash_rule_means_all_shell(self):
         self.assertTrue(matches(_bash_rule_to_regex("Bash"), "ls"))
 
+    def test_no_catastrophic_backtracking(self):
+        # Guards run on every bash call; a model-written command must never hang the harness.
+        import time
+        evil = "bash" + " --a-b" * 5000 + " -c"
+        start = time.perf_counter()
+        command_segments(evil)
+        self.assertLess(time.perf_counter() - start, 1.0)
+
     def test_pi_bridge_carries_the_current_segmenter(self):
         # The asset is a static .ts file with a pasted copy; a stale copy silently weakens pi guards.
         asset = Path(__file__).resolve().parent.parent / "agent_migrate" / "assets" / "pi-bridge.ts"
@@ -48,7 +56,7 @@ class Guards(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
     def test_typescript_copy_is_identical(self):
-        cases = BYPASSES + ALLOWED + ["ls\ndeploy prod", "sh -c 'sh -c \"sh -c x\"'"]
+        cases = BYPASSES + ALLOWED + ["ls\ndeploy prod", "sh -c 'sh -c \"sh -c x\"'", "bash" + " --a-b" * 3000 + " -c"]
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "seg.ts"
             f.write_text(SEGMENTS_TS + f"\nconsole.log(JSON.stringify({json.dumps(cases)}.map((c) => commandSegments(c))));\n")
