@@ -39,14 +39,31 @@ Every run ends with a **"not migrated"** list: logins, account connectors, keybi
 Needs Python 3.11+ and only the standard library.
 
 ```sh
-./agent-migrate claude-code pi --dry-run        # show the plan, write nothing
-./agent-migrate claude-code pi --target /tmp/pi-test
-node tests/verify_pi_target.mjs /tmp/pi-test ~/some/repo   # check the result with pi's own loader
-./agent-migrate claude-code pi                  # apply to ~/.pi/agent
-./agent-migrate codex pi --only skills,mcp,memory
+./agent-migrate <source> <target> --dry-run      # show the plan, write nothing
+./agent-migrate <source> <target> --target /tmp/test   # try it on a scratch dir
+./agent-migrate <source> <target>                # apply to the target's default dir
 ```
 
+- Sources: `claude-code`, `codex`
+- Targets: `pi`, `oh-my-pi`, `prime-agent`, `opencode`, `hermes`
+- Add `--only skills,mcp,memory` to move some parts only. Add `-v` to list every item.
+
+```sh
+./agent-migrate claude-code opencode --dry-run
+./agent-migrate codex pi --only skills,mcp,memory
+node tests/verify_pi_target.mjs /tmp/test ~/some/repo   # pi only: check the result with pi's own loader
+```
+
+You can run a second source into the same target. Each source keeps its own marked block.
+
 To run it from anywhere, symlink `agent-migrate` into a folder on your `PATH`.
+
+## Before you apply
+
+- Read the **"not migrated"** list at the end of the dry run. That list is your to-do list.
+- If you already set up the target by hand (for example your own memory or hook extension), remove that first, or those things run twice.
+- Hooks, including plugin hooks, are copied as they are. Check the **hooks** rows in the dry run.
+- Account-bound things are never copied: logins, API keys in auth files, and hosted connectors (Slack, Gmail, and so on).
 
 ## Guarantees
 

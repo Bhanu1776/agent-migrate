@@ -90,6 +90,16 @@ node tests/verify_pi_target.mjs /tmp/pi-test ~/some/repo
     <tr><td>Chats</td><td>transcripts, rollouts</td><td>pi sessions for <code>/resume</code>. Only the text and short tool-call lines are kept.</td></tr>
   </table>
 
+  <h2>Targets</h2>
+  <table>
+    <tr><th>Target</th><th>Default dir</th><th>Notes</th></tr>
+    <tr><td>pi</td><td><code>~/.pi/agent</code></td><td>A bridge extension runs memory, hooks, and guards. MCP goes through pi-mcp-adapter.</td></tr>
+    <tr><td>oh-my-pi</td><td><code>~/.omp/agent</code></td><td>omp already reads Claude and Codex setups, so the tool adds only what omp can't see. For chats, run <code>omp --from-claude</code>.</td></tr>
+    <tr><td>prime-agent</td><td><code>~/.prime/agent</code></td><td>Its only tool is <code>ipython</code>, so guards check only <code>!cmd</code> lines and string literals.</td></tr>
+    <tr><td>opencode</td><td><code>~/.config/opencode</code></td><td>Guards become <code>permission.bash</code> rules. A plugin runs hooks and memory. Chats come in through <code>opencode import</code>.</td></tr>
+    <tr><td>hermes</td><td><code>~/.hermes</code></td><td>Uses <code>SOUL.md</code>, blocks in <code>config.yaml</code>, and native hooks and approvals. Secrets go in <code>.env</code>. Chats are not moved.</td></tr>
+  </table>
+
   <h2>Promises (tested)</h2>
   <ul>
     <li class="ok">A dry run writes nothing.</li>
@@ -102,7 +112,7 @@ node tests/verify_pi_target.mjs /tmp/pi-test ~/some/repo
   <h2>Before you trust it</h2>
   <ol>
     <li>Read the <b>"not migrated"</b> list at the end of every run. That list is your to-do list.</li>
-    <li>If you already set up pi by hand (for example <code>claude-compat.ts</code>), remove it, or memory and hooks run twice.</li>
+    <li>If you already set up the target by hand (for example your own memory or hook extension), remove it, or those things run twice.</li>
     <li>Plugin hooks are run as they are. Check the <b>hooks</b> rows in the dry run first.</li>
   </ol>
 
