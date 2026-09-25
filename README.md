@@ -85,3 +85,7 @@ The neutral types are in `agent_migrate/model.py`.
 ```sh
 python3 -m unittest discover -s tests -t .
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
