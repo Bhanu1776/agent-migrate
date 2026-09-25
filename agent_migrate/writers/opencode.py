@@ -193,7 +193,7 @@ export const AgentMigrateBridge = async ({ directory }: { directory: string }) =
           const j = JSON.parse(r.stdout);
           denied ||= j.decision === "block" || j.hookSpecificOutput?.permissionDecision === "deny";
         } catch {}
-        if (denied) throw new Error(r.stderr.trim() || `Blocked by hook: ${h.command}`);
+        if (denied) throw new Error(r.stderr.trim() || `Blocked by a migrated pre-tool hook.`);
       }
     },
 
@@ -268,6 +268,8 @@ def _wildcards(rx: str) -> list[str] | None:
     Readers emit `^lit(\\s.*)?$` (Claude `X:*`), `^a.*b$` (Claude `*`), and
     `^tok\\s+(?:a|b)(\\s|$)` (Codex prefix rules). opencode's `X *` also matches bare `X`.
     """
+    if rx == r"^[\s\S]*$":  # Claude's bare `Bash` rule: every command
+        return ["*"]
     m = re.fullmatch(r"\^(.*?)(\(\\s\.\*\)\?\$|\(\\s\|\$\)|\$)", rx, re.S)
     if not m:
         return None

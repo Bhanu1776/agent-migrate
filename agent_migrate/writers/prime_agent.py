@@ -150,7 +150,7 @@ async function blockedByHook(h: Hook, name: string, toolInput: object, cwd: stri
     const j = JSON.parse(r.stdout);
     denied ||= j.decision === "block" || j.hookSpecificOutput?.permissionDecision === "deny";
   } catch {}
-  return denied ? r.stderr.trim() || `Blocked by hook: ${h.command}` : undefined;
+  return denied ? r.stderr.trim() || `Blocked by a migrated pre-tool hook.` : undefined;
 }
 
 export default function (pi: ExtensionAPI) {

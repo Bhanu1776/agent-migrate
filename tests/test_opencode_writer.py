@@ -239,5 +239,14 @@ console.log(JSON.stringify({{ afterChild, blocked, afterMain: existsSync({json.d
         self.assertEqual(json.loads(out), {"afterChild": False, "blocked": False, "afterMain": True})
 
 
+
+class BareBashRule(unittest.TestCase):
+    def test_deny_all_shell_becomes_a_star_rule(self):
+        # Claude's bare `Bash` deny must not degrade to a gap line in opencode.
+        from agent_migrate.readers.claude_code import _bash_rule_to_regex
+        from agent_migrate.writers.opencode import _wildcards
+        self.assertEqual(_wildcards(_bash_rule_to_regex("Bash")), ["*"])
+
+
 if __name__ == "__main__":
     unittest.main()

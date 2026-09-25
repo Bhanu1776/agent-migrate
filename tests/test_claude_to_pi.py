@@ -154,6 +154,18 @@ class ReviewRegressions(ClaudeToPi):
         self.run_cli()
         self.assertEqual((self.target / "AGENTS.md").read_text(), once, "each run must not grow the file")
 
+    def test_4_symlinked_source_is_stable(self):
+        # Live loop: CLAUDE.md *is* the migrated AGENTS.md. Each run must give the same file.
+        self.run_cli()
+        claude_md = self.home / ".claude" / "CLAUDE.md"
+        claude_md.unlink()
+        claude_md.symlink_to(self.target / "AGENTS.md")
+        self.run_cli()
+        once = (self.target / "AGENTS.md").read_text()
+        self.run_cli()
+        self.run_cli()
+        self.assertEqual((self.target / "AGENTS.md").read_text(), once)
+
     def test_5_sse_servers_keep_their_transport(self):
         _w(self.home / ".claude.json", json.dumps({"mcpServers": {"old": {"type": "sse", "url": "https://x/sse"}}}))
         self.run_cli()

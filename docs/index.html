@@ -106,7 +106,7 @@ node tests/verify_pi_target.mjs /tmp/pi-test ~/some/repo
     <li class="ok">A second run adds nothing new. No chats or blocks are duplicated.</li>
     <li class="ok">Secrets stay in 0600 files and never show on screen.</li>
     <li class="ok">It never deletes anything you wrote. It makes backups with a timestamp.</li>
-    <li class="ok">A config file it cannot parse is left alone and reported.</li>
+    <li class="ok">A JSON config it cannot parse is left alone and reported. YAML configs are only edited inside marked blocks.</li>
     <li class="ok">Guards check every part of a command (<code>a &amp;&amp; b</code>, <code>env X=1 cmd</code>, <code>sh -c</code>).</li>
     <li class="no">It never copies logins, account connectors (Slack, Gmail…), or keybindings. The gap report lists them for you.</li>
   </ul>

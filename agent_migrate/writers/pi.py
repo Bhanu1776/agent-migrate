@@ -39,9 +39,10 @@ def _block(key: str, body: str) -> str:
 
 
 def _upsert_block(text: str, key: str, body: str) -> str:
-    # Source text can already hold our markers (e.g. CLAUDE.md symlinked to a migrated
-    # AGENTS.md). Left as-is, the non-greedy match stops at the inner end marker and every
-    # run nests one level deeper, so neutralise them before embedding.
+    # Source text can already hold our blocks (e.g. CLAUDE.md symlinked to the migrated
+    # AGENTS.md). Embedding them nests one level deeper every run, so drop whole blocks we
+    # wrote earlier and neutralise any stray marker left over.
+    body = re.sub(r"<!-- agent-migrate:([\w.-]+):start -->.*?<!-- agent-migrate:\1:end -->\n?", "", body, flags=re.S)
     body = body.replace("<!-- agent-migrate:", "<!-- agent-migrate(source):")
     new = _block(key, body)
     rx = re.compile(rf"<!-- agent-migrate:{re.escape(key)}:start -->.*?<!-- agent-migrate:{re.escape(key)}:end -->", re.S)

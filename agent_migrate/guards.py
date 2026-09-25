@@ -14,10 +14,14 @@ import re
 
 _SPLIT = re.compile(r"\n|;|&&|\|\||\||&")
 _ASSIGN = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
-_WRAPPER = re.compile(r"^(?:sudo|env|command|builtin|exec|nohup|time|nice)(?:\s+-\S+)*(?:\s+|$)")
+# Wrappers that run the rest of the line as a command. Options that take a value are listed
+# per wrapper (`sudo -u root`, `nice -n 10`), else the value would be taken as the command.
+_WRAPPER = re.compile(
+    r"^(?:sudo(?:\s+-[ugCDhpRrTt]\s+\S+|\s+-\S+)*|nice(?:\s+-n\s+\S+|\s+-\S+)*|env(?:\s+-[uSC]\s+\S+|\s+-\S+)*"
+    r"|exec(?:\s+-a\s+\S+|\s+-\S+)*|xargs(?:\s+-[IdEeLnPs]\s+\S+|\s+-\S+)*|(?:command|builtin|nohup|time|eval)(?:\s+-\S+)*)(?:\s+|$)")
 # `sh -c 'a && b'` is split like any other command (splitting ignores quotes), so the
 # `sh -c '` opener is just one more wrapper to peel off.
-_SHELL_C = re.compile(r"^(?:ba|z|da|k)?sh\s+-c\s+['\"]?")
+_SHELL_C = re.compile(r"^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z-]+)*?\s+-[A-Za-z]*c\s+['\"]?")
 _SUBST = re.compile(r"\$\(([^)]*)\)|`([^`]*)`")
 
 
@@ -57,7 +61,7 @@ function commandSegments(cmd: string, depth = 0): string[] {
     let s = part.trim();
     for (;;) {
       let t = s.replace(/^[({'"]+/, "").replace(/[)}'"]+$/, "").trim();
-      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo|env|command|builtin|exec|nohup|time|nice)(?:\s+-\S+)*(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh\s+-c\s+['"]?/, "").trim();
+      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo(?:\s+-[ugCDhpRrTt]\s+\S+|\s+-\S+)*|nice(?:\s+-n\s+\S+|\s+-\S+)*|env(?:\s+-[uSC]\s+\S+|\s+-\S+)*|exec(?:\s+-a\s+\S+|\s+-\S+)*|xargs(?:\s+-[IdEeLnPs]\s+\S+|\s+-\S+)*|(?:command|builtin|nohup|time|eval)(?:\s+-\S+)*)(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z-]+)*?\s+-[A-Za-z]*c\s+['"]?/, "").trim();
       if (t === s) break;
       s = t;
     }

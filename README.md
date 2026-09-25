@@ -71,8 +71,8 @@ To run it from anywhere, symlink `agent-migrate` into a folder on your `PATH`.
 - Runs are idempotent: a second run does not duplicate chats, blocks, or links.
 - Secret-bearing config goes only into 0600 files and is never printed.
 - It never deletes anything you wrote. Existing files get a backup with a timestamp.
-- A config file it can't parse is left alone and reported. It is never rewritten.
-- Guards check every part of a command (`a && b`, `env X=1 cmd`, `sh -c '…'`, `$(…)`), like Claude Code and Codex do.
+- A JSON config file it can't parse is left alone and reported. YAML configs (hermes, oh-my-pi) are only edited inside marked blocks and are checked for errors when PyYAML is installed.
+- Guards check every part of a command (`a && b`, `env X=1 cmd`, `sudo -u x`, `sh -c '…'`, `$(…)`), like Claude Code and Codex do. This errs on the strict side: text like `git commit -m "x; git push"` also matches a `git push` rule.
 
 ## Add a harness
 

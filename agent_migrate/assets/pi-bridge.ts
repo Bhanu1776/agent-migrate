@@ -48,7 +48,7 @@ function commandSegments(cmd: string, depth = 0): string[] {
     let s = part.trim();
     for (;;) {
       let t = s.replace(/^[({'"]+/, "").replace(/[)}'"]+$/, "").trim();
-      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo|env|command|builtin|exec|nohup|time|nice)(?:\s+-\S+)*(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh\s+-c\s+['"]?/, "").trim();
+      t = t.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "").replace(/^(?:sudo(?:\s+-[ugCDhpRrTt]\s+\S+|\s+-\S+)*|nice(?:\s+-n\s+\S+|\s+-\S+)*|env(?:\s+-[uSC]\s+\S+|\s+-\S+)*|exec(?:\s+-a\s+\S+|\s+-\S+)*|xargs(?:\s+-[IdEeLnPs]\s+\S+|\s+-\S+)*|(?:command|builtin|nohup|time|eval)(?:\s+-\S+)*)(?:\s+|$)/, "").replace(/^(?:ba|z|da|k)?sh(?:\s+--?[A-Za-z-]+)*?\s+-[A-Za-z]*c\s+['"]?/, "").trim();
       if (t === s) break;
       s = t;
     }
@@ -191,7 +191,7 @@ export default function (pi: ExtensionAPI) {
         const j = JSON.parse(r.stdout);
         denied ||= j.decision === "block" || j.hookSpecificOutput?.permissionDecision === "deny";
       } catch {}
-      if (denied) return { block: true, reason: r.stderr.trim() || `Blocked by hook: ${h.command}` };
+      if (denied) return { block: true, reason: r.stderr.trim() || `Blocked by a migrated pre-tool hook.` };
     }
   });
 

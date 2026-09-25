@@ -18,8 +18,12 @@ BYPASSES = [
     "env A=1 git push", "A=1 B=2 git push", "sudo git push", "command git push", "time git push -f",
     "sh -c 'git push'", 'bash -c "cd x && git push"', "echo $(git push)", "echo `git push`",
     "true || git push", "(git push)", "nohup git push &",
+    # second review: wrappers whose options take a value, login shells, eval/xargs
+    "sudo -u root git push", "nice -n 10 git push", "env -u HOME git push", "exec -a x git push",
+    "bash -lc 'git push'", "bash --login -c 'git push'", 'eval "git push"', "echo . | xargs git push",
+    "echo . | xargs -I{} git push",
 ]
-ALLOWED = ["git status", "echo git push is blocked", "git pushx", "ls"]
+ALLOWED = ["git status", "echo git push is blocked", "git pushx", "ls", "sudo -u root ls", "bash -lc 'ls'", "time -p make"]
 
 
 class Guards(unittest.TestCase):
@@ -36,6 +40,11 @@ class Guards(unittest.TestCase):
 
     def test_bare_bash_rule_means_all_shell(self):
         self.assertTrue(matches(_bash_rule_to_regex("Bash"), "ls"))
+
+    def test_pi_bridge_carries_the_current_segmenter(self):
+        # The asset is a static .ts file with a pasted copy; a stale copy silently weakens pi guards.
+        asset = Path(__file__).resolve().parent.parent / "agent_migrate" / "assets" / "pi-bridge.ts"
+        self.assertIn(SEGMENTS_TS.strip(), asset.read_text())
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
     def test_typescript_copy_is_identical(self):
